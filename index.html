@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AX Staking DApp</title>
+<script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen flex flex-col items-center justify-start p-4">
+
+<h1 class="text-3xl font-bold my-4 text-center text-purple-700">AX Staking DApp</h1>
+
+<div class="bg-white p-6 rounded-2xl shadow-md w-full max-w-md">
+    <!-- Wallet Connect -->
+    <button id="connectWalletBtn" class="w-full bg-purple-600 text-white py-2 rounded-lg mb-4 hover:bg-purple-700">Connect Wallet</button>
+    <p class="text-gray-500 text-sm mb-4" id="walletAddress">Not connected</p>
+
+    <!-- Stake Section -->
+    <button id="stakeBtn" class="w-full bg-green-500 text-white py-2 rounded-lg mb-4 hover:bg-green-600">Approve & Stake 200 AX</button>
+
+    <!-- AX ID Display -->
+    <div class="mb-4">
+        <p class="text-gray-700 font-medium">Your AX ID:</p>
+        <p id="axId" class="text-xl font-bold text-purple-600">-</p>
+    </div>
+
+    <!-- Claim Section -->
+    <button id="claimBtn" class="w-full bg-blue-500 text-white py-2 rounded-lg mb-2 hover:bg-blue-600">Claim 0.40 AX</button>
+    <p id="nextClaimTimer" class="text-gray-700 text-sm mb-2">Next claim: -</p>
+    <p id="remainingClaims" class="text-gray-700 text-sm">Remaining claims: -</p>
+
+    <!-- Messages -->
+    <div id="message" class="text-center text-red-500 mt-2"></div>
+</div>
+
+<script>
+let provider;
+let signer;
+let contract;
+
+const tokenAddress = "0xFEF338fB8B658FF1C564407322b2237D0FbDf260"; // AX token address
+const contractAddress = "0x4e887e33c9862b6CE166A967837cb64e32f78463"; // deployed staking contract
+
+const STAKE_AMOUNT = ethers.utils.parseUnits("200", 18); // 200 tokens with 18 decimals
+const CLAIM_AMOUNT = ethers.utils.parseUnits("0.4", 18); // 0.40 token
+
+const abi = [
+  "function stake() external",
+  "function claimDaily() external",
+  "function getDisplayId(address user) view returns (string)",
+  "function canClaim(address user) view returns (bool)",
+  "function remainingClaims(address user) view returns (uint16)",
+  "function stakes(address) view returns (bool active, uint256 stakedAt, uint256 lastClaim, uint16 claimsMade)",
+  "event Staked(address indexed user, uint256 amount, string axId)",
+  "event Claimed(address indexed user, uint16 claimIndex, uint256 amount)"
+];
+
+let countdownInterval;
+
+// Connect wallet
+async function connectWallet() {
+    if(window.ethereum){
+        try{
+            await window.ethereum.request({ method: "eth_requestAccounts" });
+            provider = new ethers.providers.Web3Provider(window.ethereum);
+            signer = provider.getSigner();
+            const address = await signer.getAddress();
+            document.getElementById("walletAddress").innerText = address;
+
+            contract = new ethers.Contract(contractAddress, abi, signer);
+            updateUserInfo();
+            startCountdown();
+        } catch(e){
+            showMessage("Connection failed: " + e.message, "red");
+        }
+    } else {
+        alert("Please install MetaMask!");
+    }
+}
+
+// Approve + Stake
+async function stake() {
+    if(!signer) return showMessage("Wallet not connected!", "red");
+    try{
+        // Approve contract to spend tokens
+        const tokenContract = new ethers.Contract(tokenAddress, ["function approve(address spender,uint256 amount) public returns(bool)"], signer);
+        const approveTx = await tokenContract.approve(contractAddress, STAKE_AMOUNT);
+        await approveTx.wait();
+
+        // Stake tokens
+        const stakeTx = await contract.stake();
+        await stakeTx.wait();
+        showMessage("Staked successfully!", "green");
+        updateUserInfo();
+    } catch(e){
+        showMessage(e.message, "red");
+    }
+}// Claim
+async function claim() {
+    if(!signer) return showMessage("Wallet not connected!", "red");
+    try{
+        const tx = await contract.claimDaily();
+        await tx.wait();
+        showMessage("Claim successful!", "green");
+        updateUserInfo();
+    } catch(e){
+        showMessage(e.message, "red");
+    }
+}
+
+// Update user info
+async function updateUserInfo(){
+    if(!signer) return;
+    try{
+        const address = await signer.getAddress();
+        const axId = await contract.getDisplayId(address);
+        document.getElementById("axId").innerText = axId;
+
+        const remaining = await contract.remainingClaims(address);
+        document.getElementById("remainingClaims").innerText = "Remaining claims: " + remaining;
+
+    } catch(e){
+        console.log(e);
+    }
+}
+
+// Countdown timer for next claim (1 minute interval)
+async function startCountdown(){
+    if(countdownInterval) clearInterval(countdownInterval);
+    countdownInterval = setInterval(async ()=>{
+        if(!signer) return;
+        try{
+            const address = await signer.getAddress();
+            const stakeInfo = await contract.stakes(address);
+            const lastClaim = stakeInfo.lastClaim.toNumber();
+            const WAIT = 60; // 1 minute in seconds for testing
+            const now = Math.floor(Date.now()/1000);
+            let remaining = lastClaim == 0 ? 0 : (lastClaim + WAIT - now);
+            if(remaining < 0) remaining = 0;
+
+            let minutes = Math.floor(remaining / 60);
+            let seconds = remaining % 60;
+
+            if(remaining==0){
+                document.getElementById("nextClaimTimer").innerText = "Next claim: available now";
+            } else {
+                document.getElementById("nextClaimTimer").innerText = `Next claim: ${minutes}m ${seconds}s`;
+            }
+        } catch(e){
+            console.log(e);
+        }
+    }, 1000);
+}
+
+// Show messages
+function showMessage(msg, color){
+    const el = document.getElementById("message");
+    el.innerText = msg;
+    el.style.color = color;
+    setTimeout(()=>{ el.innerText = ""; }, 5000);
+}
+
+// Event listeners
+document.getElementById("connectWalletBtn").addEventListener("click", connectWallet);
+document.getElementById("stakeBtn").addEventListener("click", stake);
+document.getElementById("claimBtn").addEventListener("click", claim);
+
+// Auto update on account/network change
+if(window.ethereum){
+    window.ethereum.on("accountsChanged", ()=>connectWallet());
+    window.ethereum.on("chainChanged", ()=>location.reload());
+}
+</script>
+</body>
+</html>
